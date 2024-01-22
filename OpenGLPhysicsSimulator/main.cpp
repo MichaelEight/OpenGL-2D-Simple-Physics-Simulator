@@ -19,6 +19,18 @@ struct Vector2D {
         return *this;
     }
 
+    Vector2D& operator-=(const Vector2D& other) {
+        x -= other.x;
+        y -= other.y;
+        return *this;
+    }
+
+    Vector2D& operator*=(const Vector2D& other) {
+        x *= other.x;
+        y *= other.y;
+        return *this;
+    }
+
     Vector2D operator*(float scalar) const {
         return Vector2D(x * scalar, y * scalar);
     }
@@ -34,7 +46,6 @@ struct Color {
 
     Color(float r = 0.0f, float g = 0.0f, float b = 0.0f) : r(r), g(g), b(b) {}
 };
-
 
 class Circle {
 public:
@@ -119,13 +130,19 @@ private:
     }
 };
 
+std::vector<Circle> circles;
+float maxGravitationalForce = 100.0f;
+float restitution = 0.8f;
+const float timeStep = 1.0f / 60.0f; // 60 updates per second
+float accumulator = 0.0f;
+
 Vector2D calculateGravitationalForce(const Circle& a, const Circle& b) {
     const float G = 6.67; // Adjusted gravitational constant for visibility
     Vector2D distanceVector = b.position - a.position;
     float distance = sqrtf(distanceVector.x * distanceVector.x + distanceVector.y * distanceVector.y);
 
     // Minimum distance threshold to avoid infinite force
-    float minDistance = 20.0f; // You can adjust this value
+    float minDistance = 20.0f;
 
     // Use max between actual distance and minimum distance to avoid very high forces
     distance = std::max(distance, minDistance);
@@ -133,6 +150,7 @@ Vector2D calculateGravitationalForce(const Circle& a, const Circle& b) {
     distance /= 75; 
 
     float forceMagnitude = G * (a.mass * b.mass) / (distance * distance);
+    forceMagnitude = std::min(forceMagnitude, maxGravitationalForce); // Cap the force
 
     // Normalize distance vector and multiply by force magnitude
     return Vector2D(distanceVector.x / distance * forceMagnitude, distanceVector.y / distance * forceMagnitude);
@@ -146,19 +164,45 @@ bool checkCollision(const Circle& a, const Circle& b) {
 
 static void handleCollision(Circle& a, Circle& b) {
     Vector2D delta = b.position - a.position;
-    Vector2D normal = delta * (1.0f / sqrtf(delta.x * delta.x + delta.y * delta.y));
+    float distance = sqrtf(delta.x * delta.x + delta.y * delta.y);
+    if (distance == 0.0f) {
+        // To avoid division by zero
+        return;
+    }
 
-    float v1n = normal.x * a.velocity.x + normal.y * a.velocity.y;
-    float v2n = normal.x * b.velocity.x + normal.y * b.velocity.y;
+    // Normal and Tangential Vectors
+    Vector2D normal = delta * (1.0f / distance);
+    Vector2D tangent(-normal.y, normal.x);
 
-    float v1nTag = (v1n * (a.mass - b.mass) + 2 * b.mass * v2n) / (a.mass + b.mass);
-    float v2nTag = (v2n * (b.mass - a.mass) + 2 * a.mass * v1n) / (a.mass + b.mass);
+    // Dot Product Tangential
+    float dotProductTangentA = a.velocity.x * tangent.x + a.velocity.y * tangent.y;
+    float dotProductTangentB = b.velocity.x * tangent.x + b.velocity.y * tangent.y;
 
-    a.velocity += normal * (v1nTag - v1n);
-    b.velocity += normal * (v2nTag - v2n);
+    // Dot Product Normal
+    float dotProductNormalA = a.velocity.x * normal.x + a.velocity.y * normal.y;
+    float dotProductNormalB = b.velocity.x * normal.x + b.velocity.y * normal.y;
+
+    // Conservation of momentum in 1D for normal component
+    float m1 = (dotProductNormalA * (a.mass - b.mass) + 2 * b.mass * dotProductNormalB) / (a.mass + b.mass);
+    float m2 = (dotProductNormalB * (b.mass - a.mass) + 2 * a.mass * dotProductNormalA) / (a.mass + b.mass);
+
+    // Apply the restitution coefficient
+    m1 *= restitution;
+    m2 *= restitution;
+
+    // Update velocities
+    a.velocity.x = tangent.x * dotProductTangentA + normal.x * m1;
+    a.velocity.y = tangent.y * dotProductTangentA + normal.y * m1;
+    b.velocity.x = tangent.x * dotProductTangentB + normal.x * m2;
+    b.velocity.y = tangent.y * dotProductTangentB + normal.y * m2;
+
+    // Position correction with a small buffer to prevent sticking
+    float penetrationDepth = (a.radius + b.radius - distance) + 0.1f;  // Adding a small buffer
+    Vector2D correction = normal * (penetrationDepth / 2.0f);
+    a.position -= correction;
+    b.position += correction;
 }
 
-std::vector<Circle> circles;
 
 int main(void)
 {
@@ -191,11 +235,14 @@ int main(void)
 
     // Create a circle instance
     // radius, color, mass, position
-    circles.push_back(Circle(50.0f, Color(1.0f, 0.0f, 0.0f), 1.0f, Vector2D(500.0f, 500.0f), Vector2D(0.0f, 50.0f), -1));
-    circles.push_back(Circle(50.0f, Color(0.0f, 0.0f, 1.0f), 1.0f, Vector2D(300.0f, 300.0f), Vector2D(0.0f, -50.0f), -1));
+    circles.push_back(Circle(100.0f, Color(1.0f, 0.0f, 0.0f), 50.0f, Vector2D(500.0f, 750.0f), Vector2D(50.0f, -50.0f), -1));
+    circles.push_back(Circle(50.0f, Color(0.0f, 0.0f, 1.0f), 25.0f, Vector2D(200.0f, 300.0f), Vector2D(25.0f, 50.0f), -1));
+    //circles.push_back(Circle(5.0f, Color(0.0f, 1.0f, 0.0f), 0.4f, Vector2D(700.0f, 800.0f), Vector2D(30.0f, -50.0f), -1));
 
 
     double lastTime = glfwGetTime();
+
+    bool enable_gravity = true;
 
     // Main loop
     //
@@ -205,19 +252,23 @@ int main(void)
         float deltaTime = static_cast<float>(currentTime - lastTime);
         lastTime = currentTime;
 
-        // Apply gravitational forces and update all circles
-        for (size_t i = 0; i < circles.size(); ++i) {
-            Vector2D totalForce(0.0f, 0.0f);
-            for (size_t j = 0; j < circles.size(); ++j) {
-                if (i != j) {
-                    totalForce += calculateGravitationalForce(circles[i], circles[j]);
+
+        if (enable_gravity) {
+            // Apply gravitational forces and update all circles
+            for (size_t i = 0; i < circles.size(); ++i) {
+                Vector2D totalForce(0.0f, 0.0f);
+                for (size_t j = 0; j < circles.size(); ++j) {
+                    if (i != j) {
+                        totalForce += calculateGravitationalForce(circles[i], circles[j]);
+                    }
                 }
+                circles[i].applyForce(totalForce);
             }
-            circles[i].applyForce(totalForce);
         }
-        
-        for (size_t i = 0; i < circles.size(); ++i) {
-            circles[i].update(deltaTime);
+
+        // Update physics for all circles
+        for (auto& circle : circles) {
+            circle.update(deltaTime);
         }
 
         // Check for collision
@@ -228,6 +279,7 @@ int main(void)
                 }
             }
         }
+
 
         // Render
         glClear(GL_COLOR_BUFFER_BIT);
