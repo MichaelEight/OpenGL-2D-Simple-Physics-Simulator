@@ -136,6 +136,24 @@ float restitution = 0.8f;
 const float timeStep = 1.0f / 60.0f; // 60 updates per second
 float accumulator = 0.0f;
 
+struct Joint {
+    int circleA, circleB; // Indices of the circles in the `circles` vector
+    float fixedDistance;  // Fixed distance between the centers of the circles
+};
+
+
+std::vector<Joint> joints;
+
+void createJoint(int indexA, int indexB) {
+    const Vector2D& posA = circles[indexA].position;
+    const Vector2D& posB = circles[indexB].position;
+    float distance = sqrtf((posA.x - posB.x) * (posA.x - posB.x) + (posA.y - posB.y) * (posA.y - posB.y));
+
+    joints.push_back({ indexA, indexB, distance });
+}
+
+
+
 Vector2D calculateGravitationalForce(const Circle& a, const Circle& b) {
     const float G = 6.67; // Adjusted gravitational constant for visibility
     Vector2D distanceVector = b.position - a.position;
@@ -203,6 +221,45 @@ static void handleCollision(Circle& a, Circle& b) {
     b.position += correction;
 }
 
+bool areConnected(int indexA, int indexB, const std::vector<Joint>& joints) {
+    for (const auto& joint : joints) {
+        if ((joint.circleA == indexA && joint.circleB == indexB) ||
+            (joint.circleB == indexA && joint.circleA == indexB)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void drawJoints(const std::vector<Circle>& circles, const std::vector<Joint>& joints) {
+    glLineWidth(2.0f); // Set line width
+    glColor3f(1.0f, 1.0f, 1.0f); // Set line color (e.g., white)
+    glBegin(GL_LINES);
+    for (const auto& joint : joints) {
+        const Vector2D& posA = circles[joint.circleA].position;
+        const Vector2D& posB = circles[joint.circleB].position;
+        glVertex2f(posA.x, posA.y);
+        glVertex2f(posB.x, posB.y);
+    }
+    glEnd();
+}
+
+static void enforceJointConstraint(Circle& a, Circle& b, float fixedDistance, float damping = 0.1f) {
+    Vector2D delta = b.position - a.position;
+    float currentDistance = sqrtf(delta.x * delta.x + delta.y * delta.y);
+    if (currentDistance == 0.0f) {
+        // Avoid division by zero
+        return;
+    }
+
+    Vector2D displacement = delta * ((fixedDistance - currentDistance) / currentDistance * damping);
+    Vector2D correctionA = displacement * (b.mass / (a.mass + b.mass));
+    Vector2D correctionB = displacement * (a.mass / (a.mass + b.mass));
+
+    a.position += correctionA;
+    b.position -= correctionB;
+}
+
 
 int main(void)
 {
@@ -235,10 +292,14 @@ int main(void)
 
     // Create a circle instance
     // radius, color, mass, position
-    circles.push_back(Circle(100.0f, Color(1.0f, 0.0f, 0.0f), 50.0f, Vector2D(500.0f, 750.0f), Vector2D(50.0f, -50.0f), -1));
-    circles.push_back(Circle(50.0f, Color(0.0f, 0.0f, 1.0f), 25.0f, Vector2D(200.0f, 300.0f), Vector2D(25.0f, 50.0f), -1));
-    //circles.push_back(Circle(5.0f, Color(0.0f, 1.0f, 0.0f), 0.4f, Vector2D(700.0f, 800.0f), Vector2D(30.0f, -50.0f), -1));
+    circles.push_back(Circle(50.0f, Color(1.0f, 0.0f, 0.0f), 10.0f, Vector2D(500.0f, 600.0f), Vector2D(0.0f, 0.0f), -1));
+    circles.push_back(Circle(50.0f, Color(0.0f, 0.0f, 1.0f), 10.0f, Vector2D(500.0f, 400.0f), Vector2D(0.0f, 0.0f), -1));
+    //circles.push_back(Circle(40.0f, Color(0.0f, 1.0f, 0.0f), 20.4f, Vector2D(700.0f, 800.0f), Vector2D(30.0f, -50.0f), -1));
 
+    // Ensure there are at least two circles to create a joint
+    if (circles.size() >= 2) {
+        createJoint(0, 1); // Create a joint between the first and second circles
+    }
 
     double lastTime = glfwGetTime();
 
@@ -258,13 +319,20 @@ int main(void)
             for (size_t i = 0; i < circles.size(); ++i) {
                 Vector2D totalForce(0.0f, 0.0f);
                 for (size_t j = 0; j < circles.size(); ++j) {
-                    if (i != j) {
+                    if (i != j && !areConnected(i,j,joints)) {
                         totalForce += calculateGravitationalForce(circles[i], circles[j]);
+
+                        // Inside the gravity calculation loop
+                        if (!areConnected(i, j, joints)) {
+                            totalForce += calculateGravitationalForce(circles[i], circles[j]);
+                        }
                     }
                 }
                 circles[i].applyForce(totalForce);
             }
         }
+
+        circles[0].applyForce(Vector2D(-10.0f, 0.0f));
 
         // Update physics for all circles
         for (auto& circle : circles) {
@@ -280,12 +348,20 @@ int main(void)
             }
         }
 
+        // Enforce joint constraints
+        for (const auto& joint : joints) {
+            Circle& circleA = circles[joint.circleA];
+            Circle& circleB = circles[joint.circleB];
+            enforceJointConstraint(circleA, circleB, joint.fixedDistance);
+        }
+
 
         // Render
         glClear(GL_COLOR_BUFFER_BIT);
         for (auto& circle : circles) {
             circle.draw();
         }
+        drawJoints(circles, joints);
         glfwSwapBuffers(window);
 
         glfwPollEvents();
